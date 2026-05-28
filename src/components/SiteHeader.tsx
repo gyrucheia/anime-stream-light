@@ -1,9 +1,11 @@
-import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, LogOut } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 
 export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
   const navigate = useNavigate();
+  const { logout } = useAuth();
   const [q, setQ] = useState(initialQuery);
 
   useEffect(() => {
@@ -17,14 +19,14 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
   };
 
   return (
-    <header className="sticky top-0 z-40 border-b border-border/70 bg-background/85 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3 sm:px-6">
+    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:gap-4 sm:px-6">
         <Link to="/" className="flex shrink-0 items-center gap-2">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <span className="text-sm font-bold">A</span>
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-foreground text-background">
+            <span className="text-sm font-semibold">G</span>
           </span>
           <span className="hidden text-base font-semibold tracking-tight sm:inline">
-            Anibreeze
+            Gyrucheia
           </span>
         </Link>
         <form onSubmit={submit} className="flex flex-1 items-center">
@@ -37,11 +39,20 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               type="search"
-              placeholder="Search any anime…"
-              className="h-10 w-full rounded-full border border-border bg-muted/40 pl-9 pr-4 text-sm outline-none transition focus:border-primary focus:bg-background focus:ring-2 focus:ring-primary/15"
+              placeholder="Search anime…"
+              className="h-10 w-full rounded-full border border-border bg-muted/50 pl-9 pr-4 text-sm outline-none transition focus:border-primary focus:bg-background focus:ring-2 focus:ring-primary/15"
             />
           </div>
         </form>
+        <button
+          type="button"
+          onClick={logout}
+          aria-label="Lock"
+          title="Lock"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+        >
+          <LogOut size={16} />
+        </button>
       </div>
     </header>
   );

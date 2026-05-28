@@ -13,11 +13,11 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Anibreeze — Watch anime, breezy and bright" },
+      { title: "Gyrucheia — Private anime library" },
       {
         name: "description",
         content:
-          "Stream trending and spotlight anime in a clean, minimalist light theme. Search, watch, and download episodes instantly.",
+          "Your private, minimalist anime streaming experience. Search, watch, and download episodes.",
       },
     ],
   }),
@@ -82,7 +82,7 @@ function Home() {
       </main>
 
       <footer className="mx-auto max-w-6xl px-4 pb-10 pt-4 text-center text-xs text-muted-foreground sm:px-6">
-        Built with care. Streams routed via your private API.
+        Gyrucheia · private library
       </footer>
     </div>
   );
