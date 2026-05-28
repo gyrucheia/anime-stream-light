@@ -84,6 +84,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "apple-mobile-web-app-title", content: "Gyrucheia" },
       { title: "Gyrucheia" },
       { name: "description", content: "Gyrucheia — your private anime library." },
+      // Block all third-party script injection (ads, trackers, etc.).
+      // fetch() and media src are unrestricted so the proxy endpoints work normally.
+      {
+        httpEquiv: "Content-Security-Policy",
+        content: "script-src 'self'; object-src 'none'; base-uri 'self'",
+      },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
