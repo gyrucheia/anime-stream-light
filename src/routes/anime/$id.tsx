@@ -5,6 +5,7 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { Player } from "@/components/Player";
 import { api, EpisodeMeta, posterOf, stripHtml, titleOf } from "@/lib/api";
 import { ArrowLeft, Star } from "lucide-react";
+import { useNotifications, useWatchHistory } from "@/lib/app-context";
 
 export const Route = createFileRoute("/anime/$id")({
   component: Details,
@@ -34,10 +35,27 @@ function Details() {
     return [];
   }, [eps.data]);
 
+  const { watchHistory } = useWatchHistory();
+  const { toggleFavorite, isFavorite } = useNotifications();
+
+  const historyForThisAnime = useMemo(() => {
+    return watchHistory.find((item) => item.animeId === anilistId);
+  }, [watchHistory, anilistId]);
+
   const [selected, setSelected] = useState<number | null>(null);
 
   useEffect(() => {
-    if (selected == null && episodes.length) setSelected(episodes[0].number);
+    if (selected == null && episodes.length) {
+      if (historyForThisAnime) {
+        setSelected(historyForThisAnime.episodeNumber);
+      } else {
+        setSelected(episodes[0].number);
+      }
+    }
+  }, [episodes, selected, historyForThisAnime]);
+
+  const selectedEpisodeMeta = useMemo(() => {
+    return episodes.find((e) => e.number === selected) ?? null;
   }, [episodes, selected]);
 
   const stream = useQuery({
@@ -65,12 +83,37 @@ function Details() {
 
         <div className="mt-5 grid gap-8 lg:grid-cols-[1fr_320px]">
           <div className="space-y-6">
-            <Player stream={chosenStream} title={`${title}-ep${selected ?? 1}`} />
+            <Player
+              stream={chosenStream}
+              title={title}
+              animeId={anilistId}
+              animeCover={info.data ? posterOf(info.data) : ""}
+              episodeNumber={selected ?? 1}
+              episodeMeta={selectedEpisodeMeta}
+            />
 
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                {title}
-              </h1>
+              <div className="flex items-center gap-3 justify-between sm:justify-start">
+                <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {title}
+                </h1>
+                {info.data && (
+                  <button
+                    onClick={() => toggleFavorite(info.data)}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:bg-muted hover:text-foreground"
+                    title={isFavorite(anilistId) ? "Remove from Favorites" : "Add to Favorites"}
+                  >
+                    <Star
+                      size={18}
+                      className={
+                        isFavorite(anilistId)
+                          ? "fill-yellow-500 text-yellow-500"
+                          : "text-muted-foreground"
+                      }
+                    />
+                  </button>
+                )}
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {info.data?.seasonYear && <span>{info.data.seasonYear}</span>}
                 {info.data?.format && <span>• {info.data.format}</span>}

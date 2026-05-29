@@ -5,6 +5,7 @@ import { AnimeCard } from "@/components/AnimeCard";
 import { api, AnimeItem, posterOf, stripHtml, titleOf } from "@/lib/api";
 import { z } from "zod";
 import { Play } from "lucide-react";
+import { useWatchHistory } from "@/lib/app-context";
 
 const searchSchema = z.object({
   q: z.string().optional(),
@@ -69,6 +70,8 @@ function Home() {
         ) : (
           <>
             <Spotlight items={spotlight.data?.results?.slice(0, 5)} loading={spotlight.isLoading} />
+
+            <ContinueWatching />
 
             <section className="mt-12">
               <div className="mb-5 flex items-end justify-between">
@@ -185,6 +188,76 @@ function Spotlight({ items, loading }: { items?: AnimeItem[]; loading?: boolean 
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function ContinueWatching() {
+  const { watchHistory, removeWatchHistoryItem } = useWatchHistory();
+  if (watchHistory.length === 0) return null;
+
+  return (
+    <section className="mt-10">
+      <div className="mb-5 flex items-end justify-between">
+        <h2 className="text-xl font-semibold tracking-tight">Continue Watching</h2>
+      </div>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+        {watchHistory.map((item) => {
+          const progress = Math.min(Math.round((item.timestamp / item.duration) * 100), 100);
+          return (
+            <div
+              key={item.animeId}
+              className="group relative flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:border-primary/40 hover:shadow-md"
+            >
+              <Link
+                to="/anime/$id"
+                params={{ id: String(item.animeId) }}
+                className="block relative aspect-video w-full overflow-hidden bg-muted"
+              >
+                <img
+                  src={item.animeCover}
+                  alt={item.animeTitle}
+                  className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-end p-3">
+                  <span className="rounded bg-primary/95 px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
+                    Episode {item.episodeNumber}
+                  </span>
+                </div>
+              </Link>
+              <div className="flex flex-1 flex-col p-3">
+                <Link
+                  to="/anime/$id"
+                  params={{ id: String(item.animeId) }}
+                  className="line-clamp-1 text-sm font-semibold hover:text-primary transition"
+                >
+                  {item.animeTitle}
+                </Link>
+                <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>{progress}% watched</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeWatchHistoryItem(item.animeId);
+                    }}
+                    className="hover:text-destructive transition text-[10px] font-medium"
+                    title="Remove from history"
+                  >
+                    Remove
+                  </button>
+                </div>
+                {/* Watch progress bar */}
+                <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }

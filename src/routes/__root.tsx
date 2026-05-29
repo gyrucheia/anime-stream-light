@@ -11,6 +11,7 @@ import {
 import appCss from "../styles.css?url";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { LoginGate } from "@/components/LoginGate";
+import { AppProviders } from "@/lib/app-context";
 
 function NotFoundComponent() {
   return (
@@ -132,9 +133,11 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <Gate />
-      </AuthProvider>
+      <AppProviders>
+        <AuthProvider>
+          <Gate />
+        </AuthProvider>
+      </AppProviders>
     </QueryClientProvider>
   );
 }

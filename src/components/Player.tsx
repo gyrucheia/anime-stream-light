@@ -1,18 +1,32 @@
 import Hls from "hls.js";
 import { Download, Loader2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { Stream, proxiedM3U8 } from "@/lib/api";
+import { useEffect, useRef } from "react";
+import { Stream, EpisodeMeta, proxiedM3U8 } from "@/lib/api";
+import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
 
 export function Player({
   stream,
   title,
+  animeId,
+  animeCover,
+  episodeNumber,
+  episodeMeta,
 }: {
   stream: Stream | null;
   title: string;
+  animeId: number;
+  animeCover: string;
+  episodeNumber: number;
+  episodeMeta: EpisodeMeta | null;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [dlProgress, setDlProgress] = useState(0);
+  const { saveWatchPosition, getSavedPosition } = useWatchHistory();
+  const { activeDownloads, startDownload } = useBackgroundDownloads();
+
+  const downloadId = `${animeId}_ep_${episodeNumber}`;
+  const currentDl = activeDownloads[downloadId];
+  const downloading = currentDl?.status === "downloading";
+  const dlProgress = currentDl?.progress ?? 0;
 
   const src = stream ? proxiedM3U8(stream.url, stream.referer) : "";
 
@@ -33,91 +47,48 @@ export function Player({
     };
   }, [src]);
 
-  /**
-   * Download the current episode as a single offline-playable .ts file.
-   *
-   * Strategy (Option C — fully client-side, no backend changes):
-   *  1. Fetch the proxied .m3u8 playlist text.
-   *  2. If it's a master playlist (#EXT-X-STREAM-INF), resolve the first
-   *     variant and fetch that media playlist instead.
-   *  3. Extract every .ts segment URL, resolving relative paths against the
-   *     playlist base URL so they always go through the proxy.
-   *  4. Fetch segments sequentially, collecting ArrayBuffers.
-   *  5. Concatenate into one Blob (video/mp2t) and trigger a browser download.
-   *
-   * The resulting .ts file is a standard MPEG-TS stream playable in VLC,
-   * MPV, or any modern browser — no network connection required after saving.
-   */
+  // Handle Watch Progress (Save Timestamp)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    let lastSavedTime = 0;
+    const handleTimeUpdate = () => {
+      const currentTime = video.currentTime;
+      const duration = video.duration;
+      if (duration > 0 && Math.abs(currentTime - lastSavedTime) > 3) {
+        saveWatchPosition(animeId, title, animeCover, episodeNumber, currentTime, duration);
+        lastSavedTime = currentTime;
+      }
+    };
+
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    return () => {
+      video.removeEventListener("timeupdate", handleTimeUpdate);
+    };
+  }, [animeId, episodeNumber, title, animeCover, saveWatchPosition]);
+
+  // Handle Resume Position (Restore Timestamp)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleLoadedMetadata = () => {
+      const savedTime = getSavedPosition(animeId, episodeNumber);
+      if (savedTime > 0 && Math.abs(video.currentTime - savedTime) > 5) {
+        video.currentTime = savedTime;
+      }
+    };
+
+    video.addEventListener("loadedmetadata", handleLoadedMetadata);
+    return () => {
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+    };
+  }, [animeId, episodeNumber, getSavedPosition]);
+
   const download = async () => {
-    if (!src || !stream) return;
-    setDownloading(true);
-    setDlProgress(0);
-
-    try {
-      // ── Step 1: Fetch the top-level playlist ───────────────────────────
-      const topRes = await fetch(src);
-      if (!topRes.ok) throw new Error(`Playlist fetch failed: ${topRes.status}`);
-      const topText = await topRes.text();
-
-      // ── Step 2: Resolve master → media playlist if needed ─────────────
-      let mediaText = topText;
-      let mediaBaseUrl = src;
-
-      if (topText.includes("#EXT-X-STREAM-INF")) {
-        // Master playlist — pick the first (often highest) variant
-        const variantLine = topText
-          .split("\n")
-          .map((l) => l.trim())
-          .find((l) => l.length > 0 && !l.startsWith("#"));
-
-        if (variantLine) {
-          mediaBaseUrl = variantLine.startsWith("http")
-            ? variantLine
-            : new URL(variantLine, src).href;
-          const mediaRes = await fetch(mediaBaseUrl);
-          if (!mediaRes.ok) throw new Error(`Variant fetch failed: ${mediaRes.status}`);
-          mediaText = await mediaRes.text();
-        }
-      }
-
-      // ── Step 3: Extract segment URLs ───────────────────────────────────
-      const segmentUrls = mediaText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("#"))
-        .map((l) =>
-          l.startsWith("http") ? l : new URL(l, mediaBaseUrl).href,
-        );
-
-      if (!segmentUrls.length) {
-        throw new Error("No segments found in playlist.");
-      }
-
-      // ── Step 4: Fetch segments sequentially through the proxy ──────────
-      const buffers: ArrayBuffer[] = [];
-      for (let i = 0; i < segmentUrls.length; i++) {
-        const segRes = await fetch(segmentUrls[i]);
-        if (!segRes.ok) throw new Error(`Segment ${i + 1} failed: ${segRes.status}`);
-        buffers.push(await segRes.arrayBuffer());
-        setDlProgress(Math.round(((i + 1) / segmentUrls.length) * 100));
-      }
-
-      // ── Step 5: Concatenate and save ───────────────────────────────────
-      const blob = new Blob(buffers, { type: "video/mp2t" });
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `${title.replace(/[^a-z0-9]+/gi, "_")}.ts`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(blobUrl);
-    } catch (err) {
-      console.error("[Player] Download failed:", err);
-    } finally {
-      setDownloading(false);
-      setDlProgress(0);
-    }
+    if (!stream || !episodeMeta) return;
+    await startDownload(animeId, title, episodeMeta, stream);
   };
 
   return (
