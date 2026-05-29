@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { api, AnimeItem, EpisodeMeta, Stream, proxiedM3U8 } from "./api";
+import { api, AnimeItem, EpisodeMeta, Stream, proxiedM3U8, proxiedSegment } from "./api";
 
 // ==========================================
 // 1. THEME CONTEXT
@@ -443,14 +443,16 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     }));
 
     const src = proxiedM3U8(stream.url, stream.referer);
+    const referer = stream.referer; // Store referer for proxying segments
 
     try {
-      // ── Step 1: Fetch top-level playlist ───────────────────────────
+      // ── Step 1: Fetch top-level playlist (already proxied) ─────────────
       const topRes = await fetch(src);
       if (!topRes.ok) throw new Error(`Playlist fetch failed: ${topRes.status}`);
       const topText = await topRes.text();
 
       // ── Step 2: Resolve master → media playlist if needed ─────────────
+      // IMPORTANT: Proxy the variant URL too — direct CDN fetches are blocked by CORS
       let mediaText = topText;
       let mediaBaseUrl = src;
 
@@ -461,21 +463,29 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
           .find((l) => l.length > 0 && !l.startsWith("#"));
 
         if (variantLine) {
-          mediaBaseUrl = variantLine.startsWith("http")
+          // Resolve the raw variant URL, then wrap it through the proxy
+          const rawVariantUrl = variantLine.startsWith("http")
             ? variantLine
-            : new URL(variantLine, src).href;
+            : new URL(variantLine, stream.url).href;
+          mediaBaseUrl = proxiedSegment(rawVariantUrl, referer);
           const mediaRes = await fetch(mediaBaseUrl);
           if (!mediaRes.ok) throw new Error(`Variant fetch failed: ${mediaRes.status}`);
           mediaText = await mediaRes.text();
         }
       }
 
-      // ── Step 3: Extract segment URLs ───────────────────────────────────
-      const segmentUrls = mediaText
+      // ── Step 3: Extract + proxy segment URLs ───────────────────────────
+      // Segments are absolute CDN URLs that cannot be fetched directly from the
+      // browser — they must go through the server proxy to avoid CORS errors.
+      const rawSegmentLines = mediaText
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("#"))
-        .map((l) => (l.startsWith("http") ? l : new URL(l, mediaBaseUrl).href));
+        .filter((l) => l.length > 0 && !l.startsWith("#"));
+
+      const segmentUrls = rawSegmentLines.map((l) => {
+        const rawUrl = l.startsWith("http") ? l : new URL(l, stream.url).href;
+        return proxiedSegment(rawUrl, referer); // Always proxy through server
+      });
 
       if (!segmentUrls.length) {
         throw new Error("No segments found in playlist.");

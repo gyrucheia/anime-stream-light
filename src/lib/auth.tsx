@@ -1,6 +1,10 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 
-const PASSWORD = "LoveAnime2026";
+// Password is injected at build time from Vercel Environment Variables.
+// Set VITE_APP_PASSWORD in your Vercel project dashboard:
+//   Vercel Dashboard → Your Project → Settings → Environment Variables
+// NEVER hardcode the password here — it would be visible in your GitHub repo.
+const PASSWORD = import.meta.env.VITE_APP_PASSWORD ?? "";
 const STORAGE_KEY = "gyrucheia.auth";
 
 type AuthCtx = {

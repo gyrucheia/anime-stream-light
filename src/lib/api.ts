@@ -71,3 +71,7 @@ export const api = {
 
 export const proxiedM3U8 = (url: string, referer: string) =>
   `${API_BASE}/proxy_m3u8?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(referer)}`;
+
+// Routes a raw TS segment (or any CDN URL) through the server proxy to avoid CORS.
+export const proxiedSegment = (url: string, referer: string) =>
+  `${API_BASE}/proxy_m3u8?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(referer)}`;
