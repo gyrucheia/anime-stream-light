@@ -88,7 +88,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       // fetch() and media src are unrestricted so the proxy endpoints work normally.
       {
         httpEquiv: "Content-Security-Policy",
-        content: "script-src 'self'; object-src 'none'; base-uri 'self'",
+        content: "script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'",
       },
     ],
     links: [
