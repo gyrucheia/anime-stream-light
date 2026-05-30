@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { api, AnimeItem, EpisodeMeta, Stream, proxiedM3U8, proxiedSegment } from "./api";
+import { saveVideoBlob, deleteVideoBlob } from "./offline-db";
 
 // ==========================================
 // 1. THEME CONTEXT
@@ -397,6 +398,7 @@ export interface DownloadProgress {
   id: string; // `${animeId}_ep_${episodeNumber}`
   animeId: number;
   animeTitle: string;
+  animeCover: string; // Saved for elegant display on homepage downloads tab
   episodeNumber: number;
   progress: number;
   status: "downloading" | "completed" | "failed";
@@ -409,22 +411,58 @@ interface DownloadContextType {
     animeId: number,
     animeTitle: string,
     episodeMeta: EpisodeMeta,
-    stream: Stream
+    stream: Stream,
+    animeCover: string
   ) => Promise<void>;
   clearCompletedDownloads: () => void;
+  removeDownloadedEpisode: (animeId: number, episodeNumber: number) => Promise<void>;
 }
 
 const DownloadContext = createContext<DownloadContextType | undefined>(undefined);
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
-  const [activeDownloads, setActiveDownloads] = useState<Record<string, DownloadProgress>>({});
+  const [activeDownloads, setActiveDownloads] = useState<Record<string, DownloadProgress>>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("gyrucheia_download_history");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved) as Record<string, DownloadProgress>;
+          // Auto-recover any downloading state stuck during reload as failed
+          const normalized: Record<string, DownloadProgress> = {};
+          for (const key of Object.keys(parsed)) {
+            const item = parsed[key];
+            if (item.status === "downloading") {
+              normalized[key] = {
+                ...item,
+                status: "failed",
+                error: "Download interrupted by page reload.",
+              };
+            } else {
+              normalized[key] = item;
+            }
+          }
+          return normalized;
+        } catch (e) {
+          console.error("Failed to parse download history:", e);
+          return {};
+        }
+      }
+    }
+    return {};
+  });
+
   const { addNotification } = useNotifications();
+
+  useEffect(() => {
+    localStorage.setItem("gyrucheia_download_history", JSON.stringify(activeDownloads));
+  }, [activeDownloads]);
 
   const startDownload = async (
     animeId: number,
     animeTitle: string,
     episodeMeta: EpisodeMeta,
-    stream: Stream
+    stream: Stream,
+    animeCover: string
   ) => {
     const downloadId = `${animeId}_ep_${episodeMeta.number}`;
     if (activeDownloads[downloadId]?.status === "downloading") return;
@@ -436,6 +474,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         id: downloadId,
         animeId,
         animeTitle,
+        animeCover,
         episodeNumber: episodeMeta.number,
         progress: 0,
         status: "downloading",
@@ -511,6 +550,14 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
 
       // ── Step 5: Concatenate and save locally ───────────────────────────
       const blob = new Blob(buffers, { type: "video/mp2t" });
+
+      // Save inside IndexedDB for browser-native offline playback
+      try {
+        await saveVideoBlob(downloadId, blob);
+      } catch (dbErr) {
+        console.error("[DownloadProvider] IndexedDB offline storage failed:", dbErr);
+      }
+
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = blobUrl;
@@ -567,8 +614,24 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const removeDownloadedEpisode = async (animeId: number, episodeNumber: number) => {
+    const downloadId = `${animeId}_ep_${episodeNumber}`;
+    try {
+      await deleteVideoBlob(downloadId);
+    } catch (err) {
+      console.error("Failed to delete video blob from IndexedDB:", err);
+    }
+    setActiveDownloads((prev) => {
+      const next = { ...prev };
+      delete next[downloadId];
+      return next;
+    });
+  };
+
   return (
-    <DownloadContext.Provider value={{ activeDownloads, startDownload, clearCompletedDownloads }}>
+    <DownloadContext.Provider
+      value={{ activeDownloads, startDownload, clearCompletedDownloads, removeDownloadedEpisode }}
+    >
       {children}
     </DownloadContext.Provider>
   );

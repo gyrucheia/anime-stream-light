@@ -1,8 +1,9 @@
 import Hls from "hls.js";
-import { Download, Loader2 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Download, Loader2, Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Stream, EpisodeMeta, proxiedM3U8 } from "@/lib/api";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
+import { getVideoBlob, createOfflineStreamUrl } from "@/lib/offline-db";
 
 export function Player({
   stream,
@@ -26,26 +27,62 @@ export function Player({
   const downloadId = `${animeId}_ep_${episodeNumber}`;
   const currentDl = activeDownloads[downloadId];
   const downloading = currentDl?.status === "downloading";
+  const isCompleted = currentDl?.status === "completed";
   const dlProgress = currentDl?.progress ?? 0;
 
   const src = stream ? proxiedM3U8(stream.url, stream.referer) : "";
+  const [videoSrc, setVideoSrc] = useState<string>("");
+
+  // Auto-switch to offline IndexedDB source if download is completed
+  useEffect(() => {
+    let active = true;
+    let offlineUrl = "";
+
+    async function loadVideoSource() {
+      if (isCompleted) {
+        try {
+          const blob = await getVideoBlob(downloadId);
+          if (blob && active) {
+            offlineUrl = createOfflineStreamUrl(blob);
+            setVideoSrc(offlineUrl);
+            return;
+          }
+        } catch (err) {
+          console.error("Failed to load offline video blob from IndexedDB:", err);
+        }
+      }
+
+      if (active) {
+        setVideoSrc(src);
+      }
+    }
+
+    loadVideoSource();
+
+    return () => {
+      active = false;
+      if (offlineUrl) {
+        URL.revokeObjectURL(offlineUrl);
+      }
+    };
+  }, [src, isCompleted, downloadId]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !videoSrc) return;
 
     let hls: Hls | null = null;
     if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true });
-      hls.loadSource(src);
+      hls.loadSource(videoSrc);
       hls.attachMedia(video);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
+      video.src = videoSrc;
     }
     return () => {
       hls?.destroy();
     };
-  }, [src]);
+  }, [videoSrc]);
 
   // Handle Watch Progress (Save Timestamp)
   useEffect(() => {
@@ -87,8 +124,16 @@ export function Player({
   }, [animeId, episodeNumber, getSavedPosition]);
 
   const download = async () => {
-    if (!stream || !episodeMeta) return;
-    await startDownload(animeId, title, episodeMeta, stream);
+    if ((!stream && !isCompleted) || !episodeMeta) return;
+
+    if (isCompleted) {
+      const confirmDl = window.confirm(
+        `This episode is already downloaded. Are you sure you want to download it again?`
+      );
+      if (!confirmDl) return;
+    }
+
+    await startDownload(animeId, title, episodeMeta, stream!, animeCover);
   };
 
   return (
@@ -113,15 +158,21 @@ export function Player({
           <button
             id="download-episode-btn"
             onClick={download}
-            disabled={!stream || downloading}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={(!stream && !isCompleted) || downloading}
+            className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              isCompleted
+                ? "bg-green-600 text-white hover:bg-green-700"
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
+            }`}
           >
             {downloading ? (
               <Loader2 size={16} className="animate-spin" />
+            ) : isCompleted ? (
+              <Check size={16} />
             ) : (
               <Download size={16} />
             )}
-            {downloading ? `Downloading ${dlProgress}%` : "Download"}
+            {downloading ? `Downloading ${dlProgress}%` : isCompleted ? "Downloaded" : "Download"}
           </button>
 
           {/* Progress bar — only visible while downloading */}

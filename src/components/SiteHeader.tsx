@@ -13,7 +13,8 @@ import {
   AlertCircle,
   X,
   Star,
-  CheckCheck
+  CheckCheck,
+  Loader2
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import {
@@ -22,6 +23,7 @@ import {
   useNotifications,
   useBackgroundDownloads
 } from "@/lib/app-context";
+import { AnimeItem, posterOf, titleOf, api } from "@/lib/api";
 
 export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
   const navigate = useNavigate();
@@ -36,11 +38,17 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
   const [showDownloads, setShowDownloads] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
 
+  // Suggestions & Autocomplete Dropdown State
+  const [isFocused, setIsFocused] = useState(false);
+  const [suggestions, setSuggestions] = useState<AnimeItem[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     setQ(initialQuery);
   }, [initialQuery]);
 
-  // Close notification dropdown when clicking outside
+  // Close notifications dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
@@ -50,6 +58,40 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Close search suggestions dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setIsFocused(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounce search queries to fetch suggested anime titles
+  useEffect(() => {
+    const query = q.trim();
+    if (!query) {
+      setSuggestions([]);
+      return;
+    }
+
+    setSuggestionsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.search(query, 1);
+        setSuggestions(res?.results?.slice(0, 6) ?? []);
+      } catch (err) {
+        console.error("Suggestions fetch error:", err);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [q]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,7 +118,7 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
           </span>
         </Link>
 
-        <form onSubmit={submit} className="flex flex-1 items-center">
+        <form onSubmit={submit} className="flex flex-1 items-center" ref={searchRef}>
           <div className="relative w-full">
             <Search
               size={16}
@@ -85,10 +127,131 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
+              onFocus={() => setIsFocused(true)}
               type="search"
               placeholder="Search anime…"
               className="h-10 w-full rounded-full border border-border bg-muted/50 pl-9 pr-4 text-sm outline-none transition focus:border-primary focus:bg-background focus:ring-2 focus:ring-primary/15"
             />
+
+            {/* Floating Autocomplete suggestions card */}
+            {isFocused && (
+              <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-2xl border border-border bg-card p-4 shadow-2xl animate-in fade-in slide-in-from-top-2 duration-200">
+                {q.trim() === "" ? (
+                  // Recent search history (input focused & empty)
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                        Recent Searches
+                      </span>
+                      {searchHistory.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            localStorage.setItem("gyrucheia_search_history", "[]");
+                            window.location.reload();
+                          }}
+                          className="text-[10px] font-semibold text-destructive hover:underline"
+                        >
+                          Clear All
+                        </button>
+                      )}
+                    </div>
+
+                    {searchHistory.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-muted-foreground">
+                        Type to search anime titles...
+                      </p>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {searchHistory.map((query) => (
+                          <div
+                            key={query}
+                            className="flex items-center justify-between rounded-lg px-2 py-1.5 transition hover:bg-muted/60"
+                          >
+                            <span
+                              onClick={() => {
+                                setQ(query);
+                                navigate({ to: "/", search: { q: query } });
+                                setIsFocused(false);
+                              }}
+                              className="flex-1 cursor-pointer text-sm font-medium hover:text-primary text-foreground truncate"
+                            >
+                              {query}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeSearchQuery(query);
+                              }}
+                              className="rounded-full p-1 hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition"
+                              title="Delete recent query"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  // Suggested search results (matching typed anime titles)
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                        {suggestionsLoading && <Loader2 size={12} className="animate-spin text-primary" />}
+                        Suggested Search
+                      </span>
+                    </div>
+
+                    {suggestionsLoading && suggestions.length === 0 ? (
+                      <div className="space-y-3 py-2">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                          <div key={i} className="flex items-center gap-3">
+                            <div className="h-10 w-8 animate-pulse rounded bg-muted" />
+                            <div className="flex-1 space-y-2">
+                              <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+                              <div className="h-2 w-1/3 animate-pulse rounded bg-muted" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : suggestions.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-muted-foreground">
+                        No matches found. Press Enter to search.
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {suggestions.map((s) => (
+                          <Link
+                            key={s.id}
+                            to="/anime/$id"
+                            params={{ id: String(s.id) }}
+                            onClick={() => setIsFocused(false)}
+                            className="flex items-center gap-3 rounded-xl p-2 transition hover:bg-muted/50"
+                          >
+                            <img
+                              src={posterOf(s)}
+                              alt={titleOf(s)}
+                              className="h-10 w-8 shrink-0 rounded object-cover bg-muted border border-border/20"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold hover:text-primary leading-tight text-foreground">
+                                {titleOf(s)}
+                              </p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                {s.seasonYear ?? ""} {s.format ? `• ${s.format}` : ""}
+                              </p>
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </form>
 
@@ -229,33 +392,7 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
         </div>
       </div>
 
-      {/* Search History Chips */}
-      {searchHistory.length > 0 && (
-        <div className="mx-auto max-w-6xl flex flex-wrap items-center gap-2 px-4 pb-3 sm:px-6 -mt-1 animate-in fade-in slide-in-from-top-1 duration-200">
-          <span className="text-[11px] font-medium text-muted-foreground mr-1">Recent Searches:</span>
-          {searchHistory.map((query) => (
-            <span
-              key={query}
-              onClick={() => {
-                setQ(query);
-                navigate({ to: "/", search: { q: query } });
-              }}
-              className="inline-flex items-center gap-1 rounded-full bg-muted/80 px-2.5 py-0.5 text-xs text-foreground cursor-pointer hover:bg-primary hover:text-primary-foreground transition-all"
-            >
-              {query}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeSearchQuery(query);
-                }}
-                className="rounded-full p-0.5 hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <X size={10} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+
 
       {/* Background Active Downloads Floating Drawer */}
       {showDownloads && activeDownloadsList.length > 0 && (

@@ -4,8 +4,9 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { AnimeCard } from "@/components/AnimeCard";
 import { api, AnimeItem, posterOf, stripHtml, titleOf } from "@/lib/api";
 import { z } from "zod";
-import { Play } from "lucide-react";
-import { useWatchHistory } from "@/lib/app-context";
+import { Play, Compass, TrendingUp, HardDriveDownload, AlertTriangle, Trash2 } from "lucide-react";
+import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
+import { useState, useEffect } from "react";
 
 const searchSchema = z.object({
   q: z.string().optional(),
@@ -30,29 +31,69 @@ function Home() {
   const { q } = Route.useSearch();
   const query = (q ?? "").trim();
 
+  const [activeTab, setActiveTab] = useState<"discover" | "top" | "offline">("discover");
+  const [isOffline, setIsOffline] = useState(false);
+
+  const { activeDownloads, removeDownloadedEpisode } = useBackgroundDownloads();
+  const completedDownloads = Object.values(activeDownloads).filter((d) => d.status === "completed");
+  const completedCount = completedDownloads.length;
+
+  // Watch for online/offline events to automatically switch interface mode
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsOffline(!navigator.onLine);
+      const handleOnline = () => setIsOffline(false);
+      const handleOffline = () => {
+        setIsOffline(true);
+        setActiveTab("offline"); // Auto switch tab to Offline Library when offline
+      };
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+      return () => {
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
+      };
+    }
+  }, []);
+
   const trending = useQuery({
     queryKey: ["trending"],
     queryFn: () => api.trending(1, 24),
-    enabled: !query,
+    enabled: activeTab === "discover" && !query && !isOffline,
     staleTime: 5 * 60_000,
   });
 
   const spotlight = useQuery({
     queryKey: ["spotlight"],
     queryFn: () => api.spotlight(),
-    enabled: !query,
+    enabled: activeTab === "discover" && !query && !isOffline,
+    staleTime: 5 * 60_000,
+  });
+
+  const popular = useQuery({
+    queryKey: ["popular"],
+    queryFn: () => api.popular(1, 24),
+    enabled: activeTab === "top" && !query && !isOffline,
     staleTime: 5 * 60_000,
   });
 
   const search = useQuery({
     queryKey: ["search", query],
     queryFn: () => api.search(query, 1),
-    enabled: !!query,
+    enabled: !!query && !isOffline,
   });
 
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader initialQuery={query} />
+
+      {/* Online/Offline Status Alert Banner */}
+      {isOffline && (
+        <div className="bg-destructive/15 border-b border-destructive/30 px-4 py-2.5 text-center text-xs font-semibold text-destructive flex items-center justify-center gap-2">
+          <AlertTriangle size={14} className="animate-bounce" />
+          Offline Mode active. Only episodes in your Offline Library can be played.
+        </div>
+      )}
 
       <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
         {query ? (
@@ -69,17 +110,152 @@ function Home() {
           </section>
         ) : (
           <>
-            <Spotlight items={spotlight.data?.results?.slice(0, 5)} loading={spotlight.isLoading} />
+            {/* Dashboard Category Selection Tabs */}
+            <div className="mb-8 flex items-center justify-start gap-1 border-b border-border/40 pb-px overflow-x-auto scrollbar-none">
+              <button
+                onClick={() => setActiveTab("discover")}
+                disabled={isOffline}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition cursor-pointer select-none whitespace-nowrap ${
+                  activeTab === "discover"
+                    ? "border-primary text-foreground font-semibold"
+                    : "border-transparent text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                }`}
+              >
+                <Compass size={16} />
+                Discover
+              </button>
+              <button
+                onClick={() => setActiveTab("top")}
+                disabled={isOffline}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition cursor-pointer select-none whitespace-nowrap ${
+                  activeTab === "top"
+                    ? "border-primary text-foreground font-semibold"
+                    : "border-transparent text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                }`}
+              >
+                <TrendingUp size={16} />
+                Top Anime
+              </button>
+              <button
+                onClick={() => setActiveTab("offline")}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition cursor-pointer select-none whitespace-nowrap ${
+                  activeTab === "offline"
+                    ? "border-primary text-foreground font-semibold"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <HardDriveDownload size={16} />
+                Offline Library
+                {completedCount > 0 && (
+                  <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">
+                    {completedCount}
+                  </span>
+                )}
+              </button>
+            </div>
 
-            <ContinueWatching />
+            {/* TAB CONTENTS */}
+            {activeTab === "discover" && (
+              <>
+                <Spotlight items={spotlight.data?.results?.slice(0, 5)} loading={spotlight.isLoading} />
+                <ContinueWatching />
+                <section className="mt-12">
+                  <div className="mb-5 flex items-end justify-between">
+                    <h2 className="text-xl font-semibold tracking-tight">Trending now</h2>
+                    <span className="text-xs text-muted-foreground">Updated daily</span>
+                  </div>
+                  <Grid items={trending.data?.results} loading={trending.isLoading} />
+                </section>
+              </>
+            )}
 
-            <section className="mt-12">
-              <div className="mb-5 flex items-end justify-between">
-                <h2 className="text-xl font-semibold tracking-tight">Trending now</h2>
-                <span className="text-xs text-muted-foreground">Updated daily</span>
-              </div>
-              <Grid items={trending.data?.results} loading={trending.isLoading} />
-            </section>
+            {activeTab === "top" && (
+              <section className="space-y-6">
+                <div>
+                  <h1 className="text-2xl font-semibold tracking-tight">Top Anime</h1>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Highest rated and most popular releases.
+                  </p>
+                </div>
+                <Grid items={popular.data?.results} loading={popular.isLoading} />
+              </section>
+            )}
+
+            {activeTab === "offline" && (
+              <section className="space-y-6">
+                <div>
+                  <h1 className="text-2xl font-semibold tracking-tight">Offline Library</h1>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Episodes saved inside your browser storage, playable completely offline.
+                  </p>
+                </div>
+
+                {completedDownloads.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-border py-16 text-center">
+                    <HardDriveDownload size={40} className="mx-auto text-muted-foreground opacity-50 mb-3" />
+                    <h3 className="text-sm font-semibold text-foreground">Offline Library is Empty</h3>
+                    <p className="mt-1 text-xs text-muted-foreground max-w-xs mx-auto">
+                      Go to the Discover tab, open any anime detail page, and click the Download button to save episodes here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                    {completedDownloads.map((item) => (
+                      <div
+                        key={item.id}
+                        className="group relative flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:border-primary/40 hover:shadow-md"
+                      >
+                        <Link
+                          to="/anime/$id"
+                          params={{ id: String(item.animeId) }}
+                          className="block relative aspect-[2/3] w-full overflow-hidden bg-muted"
+                        >
+                          <img
+                            src={item.animeCover}
+                            alt={item.animeTitle}
+                            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end p-3">
+                            <span className="rounded bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">
+                              Episode {item.episodeNumber}
+                            </span>
+                          </div>
+                        </Link>
+                        <div className="flex flex-1 flex-col p-3">
+                          <Link
+                            to="/anime/$id"
+                            params={{ id: String(item.animeId) }}
+                            className="line-clamp-2 text-xs font-semibold hover:text-primary transition min-h-[2rem]"
+                          >
+                            {item.animeTitle}
+                          </Link>
+                          <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2 text-[10px] text-muted-foreground">
+                            <span className="font-semibold text-green-500">Offline Ready</span>
+                            <button
+                              onClick={async (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const confirmDelete = window.confirm(
+                                  `Are you sure you want to delete Episode ${item.episodeNumber} of ${item.animeTitle} from your local device storage?`
+                                );
+                                if (confirmDelete) {
+                                  await removeDownloadedEpisode(item.animeId, item.episodeNumber);
+                                }
+                              }}
+                              className="hover:text-destructive flex items-center gap-1 transition font-medium"
+                              title="Delete from local device"
+                            >
+                              <Trash2 size={11} />
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </>
         )}
       </main>
