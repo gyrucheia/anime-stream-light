@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { api, AnimeItem, EpisodeMeta, Stream, proxiedM3U8, proxiedSegment } from "./api";
-import { saveVideoBlob, deleteVideoBlob } from "./offline-db";
+import { saveSegmentBlob, saveEpisodeMeta, deleteEpisodeAll } from "./offline-db";
 
 // ==========================================
 // 1. THEME CONTEXT
@@ -526,52 +526,68 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // ── Step 3: Extract + proxy segment URLs ───────────────────────────
-      // Segments are absolute CDN URLs that cannot be fetched directly from the
-      // browser — they must go through the server proxy to avoid CORS errors.
-      const rawSegmentLines = mediaText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("#"));
+      // ── Step 3: Parse segments + EXTINF durations ─────────────────────
+      // Capture EXTINF duration per segment so offline playback can reconstruct
+      // a proper HLS playlist with correct timing instead of a fake 99999-second one.
+      type SegmentEntry = { proxiedUrl: string; duration: number };
+      const segments: SegmentEntry[] = [];
+      let pendingDuration = 0;
 
-      const segmentUrls = rawSegmentLines.map((l) => {
-        const rawUrl = l.startsWith("http") ? l : new URL(l, stream.url).href;
-        return proxiedSegment(rawUrl, referer); // Always proxy through server
-      });
+      for (const line of mediaText.split("\n").map((l) => l.trim())) {
+        if (line.startsWith("#EXTINF:")) {
+          const match = line.match(/^#EXTINF:([\d.]+)/);
+          pendingDuration = match ? parseFloat(match[1]) : 0;
+        } else if (line.length > 0 && !line.startsWith("#")) {
+          const rawUrl = line.startsWith("http") ? line : new URL(line, stream.url).href;
+          segments.push({ proxiedUrl: proxiedSegment(rawUrl, referer), duration: pendingDuration });
+          pendingDuration = 0;
+        }
+      }
 
-      if (!segmentUrls.length) {
+      if (!segments.length) {
         throw new Error("No segments found in playlist.");
       }
 
-      // ── Step 4: Fetch segments sequentially through the proxy ──────────
+      // ── Step 4: Fetch segments + save each individually to IndexedDB ──
+      // Storing N small blobs (~5 MB each) instead of one big blob means the
+      // offline player only loads the next few segments into RAM at a time.
       const buffers: ArrayBuffer[] = [];
-      for (let i = 0; i < segmentUrls.length; i++) {
-        const segRes = await fetch(segmentUrls[i]);
+      for (let i = 0; i < segments.length; i++) {
+        const segRes = await fetch(segments[i].proxiedUrl);
         if (!segRes.ok) throw new Error(`Segment ${i + 1} failed: ${segRes.status}`);
-        buffers.push(await segRes.arrayBuffer());
+        const buffer = await segRes.arrayBuffer();
+        buffers.push(buffer);
+
+        // Persist segment to IndexedDB for offline playback
+        try {
+          await saveSegmentBlob(downloadId, i, new Blob([buffer], { type: "video/mp2t" }));
+        } catch (dbErr) {
+          console.error(`[DownloadProvider] Failed to save segment ${i}:`, dbErr);
+        }
 
         // Update progress in state
-        const currentProgress = Math.round(((i + 1) / segmentUrls.length) * 100);
+        const currentProgress = Math.round(((i + 1) / segments.length) * 100);
         setActiveDownloads((prev) => ({
           ...prev,
-          [downloadId]: {
-            ...prev[downloadId],
-            progress: currentProgress,
-          },
+          [downloadId]: { ...prev[downloadId], progress: currentProgress },
         }));
       }
 
-      // ── Step 5: Concatenate and save locally ───────────────────────────
-      const blob = new Blob(buffers, { type: "video/mp2t" });
-
-      // Save inside IndexedDB for browser-native offline playback
+      // ── Step 5: Save episode metadata + trigger device file download ────
+      // Metadata stores segment count + per-segment durations needed to rebuild
+      // a proper HLS M3U8 for offline playback.
       try {
-        await saveVideoBlob(downloadId, blob);
+        await saveEpisodeMeta(downloadId, {
+          segmentCount: segments.length,
+          durations: segments.map((s) => s.duration),
+        });
       } catch (dbErr) {
-        console.error("[DownloadProvider] IndexedDB offline storage failed:", dbErr);
+        console.error("[DownloadProvider] Failed to save episode meta:", dbErr);
       }
 
-      const blobUrl = URL.createObjectURL(blob);
+      // Trigger .ts file download to device storage (full episode concatenated)
+      const fullBlob = new Blob(buffers, { type: "video/mp2t" });
+      const blobUrl = URL.createObjectURL(fullBlob);
       const a = document.createElement("a");
       a.href = blobUrl;
       a.download = `${animeTitle.replace(/[^a-z0-9]+/gi, "_")}_Ep_${episodeMeta.number}.ts`;
@@ -632,9 +648,9 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const removeDownloadedEpisode = async (animeId: number, episodeNumber: number) => {
     const downloadId = `${animeId}_ep_${episodeNumber}`;
     try {
-      await deleteVideoBlob(downloadId);
+      await deleteEpisodeAll(downloadId);
     } catch (err) {
-      console.error("Failed to delete video blob from IndexedDB:", err);
+      console.error("Failed to delete episode from IndexedDB:", err);
     }
     setActiveDownloads((prev) => {
       const next = { ...prev };

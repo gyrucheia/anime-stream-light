@@ -7,7 +7,7 @@ import { z } from "zod";
 import { Play, Compass, TrendingUp, HardDriveDownload, AlertTriangle, Trash2, X, Loader2 } from "lucide-react";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
 import { useState, useEffect, useRef } from "react";
-import { getVideoBlob, createOfflineStreamUrl } from "@/lib/offline-db";
+import { getSegmentBlob, getEpisodeMeta } from "@/lib/offline-db";
 import Hls from "hls.js";
 
 const searchSchema = z.object({
@@ -307,21 +307,124 @@ function OfflinePlayerModal({
 
     async function startPlay() {
       try {
-        const blob = await getVideoBlob(episode.id);
-        if (!blob) throw new Error("Video file not found in local browser storage.");
+        const downloadId = episode.id;
+        const meta = await getEpisodeMeta(downloadId);
+        if (!meta || meta.segmentCount === 0) {
+          throw new Error("Video file not found in local browser storage.");
+        }
 
         const video = videoRef.current;
         if (!video) return;
 
         if (Hls.isSupported()) {
           // Play via custom virtual in-memory HLS stream for Android/Desktop browsers
-          offlineUrl = createOfflineStreamUrl(blob);
-          hls = new Hls({ enableWorker: true });
+          const maxDur = Math.ceil(Math.max(...meta.durations, 0) + 1);
+          const lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            `#EXT-X-TARGETDURATION:${maxDur}`,
+            "#EXT-X-MEDIA-SEQUENCE:0",
+          ];
+          for (let i = 0; i < meta.segmentCount; i++) {
+            lines.push(`#EXTINF:${(meta.durations[i] || 0).toFixed(3)},`);
+            lines.push(`idb://${downloadId}/seg/${i}`);
+          }
+          lines.push("#EXT-X-ENDLIST");
+
+          const m3u8Blob = new Blob([lines.join("\n")], { type: "application/x-mpegURL" });
+          offlineUrl = URL.createObjectURL(m3u8Blob);
+
+          // Custom HLS loader for IndexedDB segments
+          const DefaultLoader = Hls.DefaultConfig.loader as any;
+
+          class OfflineIDBLoader extends DefaultLoader {
+            private ctrl: AbortController | null = null;
+            load(context: any, _config: any, callbacks: any) {
+              const url = context.url as string;
+
+              // idb:// segment URL
+              if (url.startsWith("idb://")) {
+                const withoutScheme = url.slice("idb://".length);
+                const slashSeg = withoutScheme.lastIndexOf("/seg/");
+                const dlId = withoutScheme.slice(0, slashSeg);
+                const segIndex = parseInt(withoutScheme.slice(slashSeg + "/seg/".length), 10);
+                const t0 = performance.now();
+
+                getSegmentBlob(dlId, segIndex)
+                  .then(async (blob) => {
+                    if (!blob) {
+                      callbacks.onError(
+                        { code: 0, text: `Offline segment ${segIndex} missing from IndexedDB` },
+                        context, null, null
+                      );
+                      return;
+                    }
+                    const data = await blob.arrayBuffer();
+                    callbacks.onSuccess(
+                      { url, data },
+                      {
+                        trequest: t0,
+                        ttfb: performance.now(),
+                        tload: performance.now(),
+                        loaded: data.byteLength,
+                        total: data.byteLength,
+                      },
+                      context
+                    );
+                  })
+                  .catch((err: Error) => {
+                    callbacks.onError({ code: 0, text: String(err) }, context, null, null);
+                  });
+                return;
+              }
+
+              // blob: URL (virtual M3U8)
+              if (url.startsWith("blob:")) {
+                this.ctrl = new AbortController();
+                const t0 = performance.now();
+                fetch(url, { signal: this.ctrl.signal })
+                  .then(async (res) => {
+                    const t1 = performance.now();
+                    const data =
+                      context.responseType === "arraybuffer"
+                        ? await res.arrayBuffer()
+                        : await res.text();
+                    callbacks.onSuccess(
+                      { url, data },
+                      { trequest: t0, ttfb: t1, tload: performance.now(), loaded: 0, total: 0 },
+                      context
+                    );
+                  })
+                  .catch((err: Error) => {
+                    if (err?.name === "AbortError") return;
+                    callbacks.onError({ code: 0, text: String(err) }, context, null, null);
+                  });
+                return;
+              }
+
+              super.load(context, _config, callbacks);
+            }
+            abort() { this.ctrl?.abort(); super.abort?.(); }
+            destroy() { this.ctrl?.abort(); super.destroy?.(); }
+          }
+
+          hls = new Hls({ loader: OfflineIDBLoader as any });
           hls.loadSource(offlineUrl);
           hls.attachMedia(video);
         } else {
-          // iOS Safari native video engine plays direct Blob URL with native demuxer
-          offlineUrl = URL.createObjectURL(blob);
+          // iOS Safari: native video engine plays concatenated Blob URL
+          const segments: Blob[] = [];
+          for (let i = 0; i < meta.segmentCount; i++) {
+            const segBlob = await getSegmentBlob(downloadId, i);
+            if (segBlob) {
+              segments.push(segBlob);
+            }
+          }
+          if (segments.length === 0) {
+            throw new Error("No segments found for this downloaded episode.");
+          }
+          const fullBlob = new Blob(segments, { type: "video/mp2t" });
+          offlineUrl = URL.createObjectURL(fullBlob);
           video.src = offlineUrl;
         }
 

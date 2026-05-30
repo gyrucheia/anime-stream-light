@@ -61,21 +61,56 @@ export async function deleteVideoBlob(id: string): Promise<void> {
   }
 }
 
-/**
- * Creates a local virtual M3U8 playlist from a `.ts` Blob.
- * HLS.js parses this playlist, fetches the local segment URL (which is instantly retrieved),
- * remuxes the MPEG-2 TS container into browser-native fragment MP4, and streams it offline!
- */
-export function createOfflineStreamUrl(blob: Blob): string {
-  const blobUrl = URL.createObjectURL(blob);
-  const m3u8Content = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:99999
-#EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:99999.0,
-${blobUrl}
-#EXT-X-ENDLIST`;
+// ── Per-segment storage (new format) ──────────────────────────────────────────
+// Episodes are stored as N individual segment blobs + a metadata record.
+// This prevents loading a monolithic 200–500 MB ArrayBuffer on mobile;
+// HLS.js instead fetches each ~5 MB segment on-demand as it buffers ahead.
 
-  const m3u8Blob = new Blob([m3u8Content], { type: "application/x-mpegURL" });
-  return URL.createObjectURL(m3u8Blob);
+export interface OfflineEpisodeMeta {
+  segmentCount: number;
+  durations: number[]; // EXTINF duration per segment, in seconds
+}
+
+export async function saveEpisodeMeta(id: string, meta: OfflineEpisodeMeta): Promise<void> {
+  const blob = new Blob([JSON.stringify(meta)], { type: "application/json" });
+  await saveVideoBlob(`${id}_meta`, blob);
+}
+
+export async function getEpisodeMeta(id: string): Promise<OfflineEpisodeMeta | null> {
+  try {
+    const blob = await getVideoBlob(`${id}_meta`);
+    if (!blob) return null;
+    const text = await blob.text();
+    return JSON.parse(text) as OfflineEpisodeMeta;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSegmentBlob(id: string, index: number, blob: Blob): Promise<void> {
+  await saveVideoBlob(`${id}_seg_${index}`, blob);
+}
+
+export async function getSegmentBlob(id: string, index: number): Promise<Blob | null> {
+  return getVideoBlob(`${id}_seg_${index}`);
+}
+
+/**
+ * Deletes all IndexedDB records for an episode:
+ * the metadata blob, every segment blob, and the old-style monolithic blob (if any).
+ */
+export async function deleteEpisodeAll(id: string): Promise<void> {
+  try {
+    const meta = await getEpisodeMeta(id);
+    if (meta) {
+      for (let i = 0; i < meta.segmentCount; i++) {
+        await deleteVideoBlob(`${id}_seg_${i}`);
+      }
+      await deleteVideoBlob(`${id}_meta`);
+    }
+    // Also clean up old-format monolithic blob if it exists
+    await deleteVideoBlob(id);
+  } catch (err) {
+    console.error("Failed to delete episode from IndexedDB:", err);
+  }
 }

@@ -3,7 +3,7 @@ import { Download, Loader2, Check } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Stream, EpisodeMeta, proxiedM3U8 } from "@/lib/api";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
-import { getVideoBlob } from "@/lib/offline-db";
+import { getEpisodeMeta, getSegmentBlob } from "@/lib/offline-db";
 
 export function Player({
   stream,
@@ -30,35 +30,59 @@ export function Player({
   const isCompleted = currentDl?.status === "completed";
   const dlProgress = currentDl?.progress ?? 0;
 
+  // Ref so we can read the latest isCompleted inside effects WITHOUT adding
+  // it to the dependency array — this prevents the player from restarting
+  // when a download finishes while the episode is already playing.
+  const isCompletedRef = useRef(isCompleted);
+  isCompletedRef.current = isCompleted;
+
   const src = stream ? proxiedM3U8(stream.url, stream.referer) : "";
-  // null = not loaded yet, "" = no source, string = url/bloburl
+  // null = not yet resolved; "" = no source available; string = URL to load
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [isOfflineBlob, setIsOfflineBlob] = useState(false);
 
-  // Resolve the correct video source: offline blob (priority) or live HLS stream
+  // ── Resolve the correct video source per episode ──────────────────────────
+  // Runs only when the stream URL or episode changes (NOT when isCompleted
+  // changes), so an in-progress or just-finished download won't interrupt
+  // the currently playing video.
   useEffect(() => {
     let active = true;
     let createdBlobUrl = "";
 
     async function loadVideoSource() {
-      if (isCompleted) {
+      // Read latest isCompleted from ref (avoids stale closure without adding to deps)
+      if (isCompletedRef.current) {
         try {
-          const blob = await getVideoBlob(downloadId);
-          if (blob && active) {
-            // ✅ Direct blob URL — works on Android Chrome & iOS Safari alike.
-            // Skips HLS.js entirely since the file is already fully downloaded.
-            // The blob-in-M3U8 approach fails on Android because HLS.js's
-            // XHR loader cannot follow blob: URLs as segment sources.
-            createdBlobUrl = URL.createObjectURL(blob);
+          const meta = await getEpisodeMeta(downloadId);
+          if (meta && meta.segmentCount > 0 && active) {
+            // Build a proper segmented virtual M3U8 with idb:// segment URLs.
+            // HLS.js will fetch each segment on-demand from IndexedDB via the
+            // custom loader below, keeping RAM usage low on mobile devices.
+            const maxDur = Math.ceil(Math.max(...meta.durations, 0) + 1);
+            const lines = [
+              "#EXTM3U",
+              "#EXT-X-VERSION:3",
+              `#EXT-X-TARGETDURATION:${maxDur}`,
+              "#EXT-X-MEDIA-SEQUENCE:0",
+            ];
+            for (let i = 0; i < meta.segmentCount; i++) {
+              lines.push(`#EXTINF:${(meta.durations[i] || 0).toFixed(3)},`);
+              lines.push(`idb://${downloadId}/seg/${i}`);
+            }
+            lines.push("#EXT-X-ENDLIST");
+
+            const m3u8Blob = new Blob([lines.join("\n")], { type: "application/x-mpegURL" });
+            createdBlobUrl = URL.createObjectURL(m3u8Blob);
             setVideoSrc(createdBlobUrl);
             setIsOfflineBlob(true);
             return;
           }
         } catch (err) {
-          console.error("Failed to load offline video blob from IndexedDB:", err);
+          console.error("Failed to load offline episode meta from IndexedDB:", err);
         }
       }
 
+      // Fall back to live network HLS stream
       if (active) {
         setVideoSrc(src);
         setIsOfflineBlob(false);
@@ -69,38 +93,78 @@ export function Player({
 
     return () => {
       active = false;
-      if (createdBlobUrl) {
-        URL.revokeObjectURL(createdBlobUrl);
-      }
+      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
     };
-  }, [src, isCompleted, downloadId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, downloadId]); // isCompleted intentionally omitted — read via ref to avoid mid-stream restart
 
-  // Attach video source to the <video> element
+  // ── Attach video source to the <video> element ────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video || videoSrc === null) return;
 
     let hls: Hls | null = null;
-    let m3u8BlobUrl = "";
 
     if (isOfflineBlob && videoSrc) {
-      // ── Offline blob path ───────────────────────────────────────────────
+      // ── Offline path ──────────────────────────────────────────────────────
       if (Hls.isSupported()) {
         // Android Chrome / Desktop:
-        // Raw MPEG-TS is NOT natively playable via video.src on Chrome.
-        // HLS.js can remux it, but its default XHR loader cannot fetch blob:
-        // URLs as segments. Fix: a custom loader that uses fetch() for blob:
-        // URLs — fetch() CAN read blob: URLs on all modern browsers.
+        // HLS.js remuxes MPEG-TS → fMP4 for MSE playback. We provide a custom
+        // loader that handles two special URL schemes:
+        //   idb://{downloadId}/seg/{i}  → reads segment blob from IndexedDB
+        //   blob:…                       → reads the virtual M3U8 via fetch()
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const DefaultLoader = Hls.DefaultConfig.loader as any;
-        class BlobFetchLoader extends DefaultLoader {
+
+        class OfflineIDBLoader extends DefaultLoader {
           private ctrl: AbortController | null = null;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          load(context: any, config: any, callbacks: any) {
-            if (typeof context.url === "string" && context.url.startsWith("blob:")) {
+          load(context: any, _config: any, callbacks: any) {
+            const url = context.url as string;
+
+            // ── idb:// segment URL ─────────────────────────────────────────
+            if (url.startsWith("idb://")) {
+              const withoutScheme = url.slice("idb://".length);
+              const slashSeg = withoutScheme.lastIndexOf("/seg/");
+              const dlId = withoutScheme.slice(0, slashSeg);
+              const segIndex = parseInt(withoutScheme.slice(slashSeg + "/seg/".length), 10);
+              const t0 = performance.now();
+
+              getSegmentBlob(dlId, segIndex)
+                .then(async (blob) => {
+                  if (!blob) {
+                    callbacks.onError(
+                      { code: 0, text: `Offline segment ${segIndex} missing from IndexedDB` },
+                      context, null, null
+                    );
+                    return;
+                  }
+                  const data = await blob.arrayBuffer();
+                  callbacks.onSuccess(
+                    { url, data },
+                    {
+                      trequest: t0,
+                      ttfb: performance.now(),
+                      tload: performance.now(),
+                      loaded: data.byteLength,
+                      total: data.byteLength,
+                    },
+                    context
+                  );
+                })
+                .catch((err: Error) => {
+                  callbacks.onError({ code: 0, text: String(err) }, context, null, null);
+                });
+              return;
+            }
+
+            // ── blob: URL (the virtual M3U8) ───────────────────────────────
+            // fetch() supports blob: URLs; HLS.js's default XHR loader may not
+            // handle them reliably on Android Chrome.
+            if (url.startsWith("blob:")) {
               this.ctrl = new AbortController();
               const t0 = performance.now();
-              fetch(context.url, { signal: this.ctrl.signal })
+              fetch(url, { signal: this.ctrl.signal })
                 .then(async (res) => {
                   const t1 = performance.now();
                   const data =
@@ -108,7 +172,7 @@ export function Player({
                       ? await res.arrayBuffer()
                       : await res.text();
                   callbacks.onSuccess(
-                    { url: context.url, data },
+                    { url, data },
                     { trequest: t0, ttfb: t1, tload: performance.now(), loaded: 0, total: 0 },
                     context
                   );
@@ -119,39 +183,25 @@ export function Player({
                 });
               return;
             }
-            // Non-blob URLs: fall back to default HLS.js XHR loader
-            super.load(context, config, callbacks);
+
+            // Any other URL: fall back to default HLS.js XHR loader
+            super.load(context, _config, callbacks);
           }
           abort() { this.ctrl?.abort(); super.abort?.(); }
           destroy() { this.ctrl?.abort(); super.destroy?.(); }
         }
 
-        // Build a single-segment virtual M3U8 whose segment is the blob URL.
-        // HLS.js fetches both the M3U8 and the segment via BlobFetchLoader.
-        const m3u8 = [
-          "#EXTM3U",
-          "#EXT-X-VERSION:3",
-          "#EXT-X-TARGETDURATION:99999",
-          "#EXT-X-MEDIA-SEQUENCE:0",
-          "#EXTINF:99999.0,",
-          videoSrc, // the blob: URL of the raw .ts data
-          "#EXT-X-ENDLIST",
-        ].join("\n");
-        m3u8BlobUrl = URL.createObjectURL(
-          new Blob([m3u8], { type: "application/x-mpegURL" })
-        );
-
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        hls = new Hls({ loader: BlobFetchLoader as any });
-        hls.loadSource(m3u8BlobUrl);
+        hls = new Hls({ loader: OfflineIDBLoader as any });
+        hls.loadSource(videoSrc); // videoSrc = blob: URL of the virtual M3U8
         hls.attachMedia(video);
       } else {
-        // iOS Safari: native MPEG-TS support — direct blob src works here
+        // iOS Safari: native MPEG-TS support — play the M3U8 blob URL directly
         video.src = videoSrc;
         video.load();
       }
     } else {
-      // ── Live network HLS stream path ──────────────────────────────────
+      // ── Live network HLS stream path ────────────────────────────────────
       if (!videoSrc) return;
       if (Hls.isSupported()) {
         hls = new Hls({ enableWorker: true });
@@ -165,11 +215,10 @@ export function Player({
 
     return () => {
       hls?.destroy();
-      if (m3u8BlobUrl) URL.revokeObjectURL(m3u8BlobUrl);
     };
   }, [videoSrc, isOfflineBlob]);
 
-  // Handle Watch Progress (Save Timestamp)
+  // ── Save watch progress every 3 seconds ──────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -190,7 +239,7 @@ export function Player({
     };
   }, [animeId, episodeNumber, title, animeCover, saveWatchPosition]);
 
-  // Handle Resume Position (Restore Timestamp)
+  // ── Restore saved watch position on load ──────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
