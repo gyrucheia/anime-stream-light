@@ -4,9 +4,11 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { AnimeCard } from "@/components/AnimeCard";
 import { api, AnimeItem, posterOf, stripHtml, titleOf } from "@/lib/api";
 import { z } from "zod";
-import { Play, Compass, TrendingUp, HardDriveDownload, AlertTriangle, Trash2 } from "lucide-react";
+import { Play, Compass, TrendingUp, HardDriveDownload, AlertTriangle, Trash2, X, Loader2 } from "lucide-react";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { getVideoBlob, createOfflineStreamUrl } from "@/lib/offline-db";
+import Hls from "hls.js";
 
 const searchSchema = z.object({
   q: z.string().optional(),
@@ -33,6 +35,7 @@ function Home() {
 
   const [activeTab, setActiveTab] = useState<"discover" | "top" | "offline">("discover");
   const [isOffline, setIsOffline] = useState(false);
+  const [playingOfflineEpisode, setPlayingOfflineEpisode] = useState<any | null>(null);
 
   const { activeDownloads, removeDownloadedEpisode } = useBackgroundDownloads();
   const completedDownloads = Object.values(activeDownloads).filter((d) => d.status === "completed");
@@ -203,11 +206,10 @@ function Home() {
                     {completedDownloads.map((item) => (
                       <div
                         key={item.id}
-                        className="group relative flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:border-primary/40 hover:shadow-md"
+                        onClick={() => setPlayingOfflineEpisode(item)}
+                        className="group relative flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition hover:border-primary/40 hover:shadow-md cursor-pointer"
                       >
-                        <Link
-                          to="/anime/$id"
-                          params={{ id: String(item.animeId) }}
+                        <div
                           className="block relative aspect-[2/3] w-full overflow-hidden bg-muted"
                         >
                           <img
@@ -220,15 +222,21 @@ function Home() {
                               Episode {item.episodeNumber}
                             </span>
                           </div>
-                        </Link>
-                        <div className="flex flex-1 flex-col p-3">
-                          <Link
-                            to="/anime/$id"
-                            params={{ id: String(item.animeId) }}
-                            className="line-clamp-2 text-xs font-semibold hover:text-primary transition min-h-[2rem]"
+                          
+                          {/* Premium Play Hover Overlay */}
+                          <div className="absolute inset-0 bg-black/45 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300">
+                            <div className="rounded-full bg-primary p-3 text-primary-foreground shadow-lg transform scale-90 group-hover:scale-100 transition duration-300">
+                              <Play size={20} className="fill-current" />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-1 flex-col p-3" onClick={(e) => e.stopPropagation()}>
+                          <span
+                            onClick={() => setPlayingOfflineEpisode(item)}
+                            className="line-clamp-2 text-xs font-semibold hover:text-primary transition min-h-[2rem] cursor-pointer"
                           >
                             {item.animeTitle}
-                          </Link>
+                          </span>
                           <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2 text-[10px] text-muted-foreground">
                             <span className="font-semibold text-green-500">Offline Ready</span>
                             <button
@@ -242,7 +250,7 @@ function Home() {
                                   await removeDownloadedEpisode(item.animeId, item.episodeNumber);
                                 }
                               }}
-                              className="hover:text-destructive flex items-center gap-1 transition font-medium"
+                              className="hover:text-destructive flex items-center gap-1 transition font-medium cursor-pointer"
                               title="Delete from local device"
                             >
                               <Trash2 size={11} />
@@ -263,6 +271,128 @@ function Home() {
       <footer className="mx-auto max-w-6xl px-4 pb-10 pt-4 text-center text-xs text-muted-foreground sm:px-6">
         Gyrucheia · private library
       </footer>
+
+      {playingOfflineEpisode && (
+        <OfflinePlayerModal
+          episode={playingOfflineEpisode}
+          onClose={() => setPlayingOfflineEpisode(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function OfflinePlayerModal({
+  episode,
+  onClose,
+}: {
+  episode: any;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    let offlineUrl = "";
+    let hls: Hls | null = null;
+
+    async function startPlay() {
+      try {
+        const blob = await getVideoBlob(episode.id);
+        if (!blob) throw new Error("Video file not found in local browser storage.");
+
+        const video = videoRef.current;
+        if (!video) return;
+
+        if (Hls.isSupported()) {
+          // Play via custom virtual in-memory HLS stream for Android/Desktop browsers
+          offlineUrl = createOfflineStreamUrl(blob);
+          hls = new Hls({ enableWorker: true });
+          hls.loadSource(offlineUrl);
+          hls.attachMedia(video);
+        } else {
+          // iOS Safari native video engine plays direct Blob URL with native demuxer
+          offlineUrl = URL.createObjectURL(blob);
+          video.src = offlineUrl;
+        }
+
+        video.onloadedmetadata = () => {
+          if (active) setLoading(false);
+        };
+        
+        // Mobile browsers block autoplay without click, so trigger play once loaded
+        video.oncanplay = () => {
+          video.play().catch(() => {});
+        };
+
+      } catch (err: any) {
+        console.error(err);
+        if (active) {
+          setError(err.message || "Failed to load offline video.");
+          setLoading(false);
+        }
+      }
+    }
+
+    startPlay();
+
+    return () => {
+      active = false;
+      hls?.destroy();
+      if (offlineUrl) {
+        URL.revokeObjectURL(offlineUrl);
+      }
+    };
+  }, [episode.id]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-4 animate-in fade-in duration-300">
+      <div className="relative w-full max-w-4xl space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between text-white">
+          <div>
+            <h2 className="text-base font-semibold truncate max-w-sm sm:max-w-md">
+              {episode.animeTitle}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Episode {episode.episodeNumber} · Playing Offline
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-full bg-white/10 p-2 hover:bg-white/20 transition text-white"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Video Player Box */}
+        <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl">
+          {loading && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/90 text-white">
+              <Loader2 className="animate-spin text-primary mr-2" size={20} />
+              <span className="text-sm">Loading offline video...</span>
+            </div>
+          )}
+
+          {error && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/90 text-destructive p-4 text-center">
+              <AlertTriangle className="text-destructive mb-2" size={28} />
+              <p className="text-sm font-semibold">{error}</p>
+            </div>
+          )}
+
+          <video
+            ref={videoRef}
+            controls
+            autoPlay
+            playsInline
+            className="h-full w-full object-contain"
+          />
+        </div>
+      </div>
     </div>
   );
 }
