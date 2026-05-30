@@ -80,27 +80,92 @@ export function Player({
     const video = videoRef.current;
     if (!video || videoSrc === null) return;
 
-    // ── Offline blob path: set src directly, no HLS.js needed ──────────
+    let hls: Hls | null = null;
+    let m3u8BlobUrl = "";
+
     if (isOfflineBlob && videoSrc) {
-      // Destroy any existing HLS instance before setting src directly
-      video.src = videoSrc;
-      video.load();
-      return;
+      // ── Offline blob path ───────────────────────────────────────────────
+      if (Hls.isSupported()) {
+        // Android Chrome / Desktop:
+        // Raw MPEG-TS is NOT natively playable via video.src on Chrome.
+        // HLS.js can remux it, but its default XHR loader cannot fetch blob:
+        // URLs as segments. Fix: a custom loader that uses fetch() for blob:
+        // URLs — fetch() CAN read blob: URLs on all modern browsers.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const DefaultLoader = Hls.DefaultConfig.loader as any;
+        class BlobFetchLoader extends DefaultLoader {
+          private ctrl: AbortController | null = null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          load(context: any, config: any, callbacks: any) {
+            if (typeof context.url === "string" && context.url.startsWith("blob:")) {
+              this.ctrl = new AbortController();
+              const t0 = performance.now();
+              fetch(context.url, { signal: this.ctrl.signal })
+                .then(async (res) => {
+                  const t1 = performance.now();
+                  const data =
+                    context.responseType === "arraybuffer"
+                      ? await res.arrayBuffer()
+                      : await res.text();
+                  callbacks.onSuccess(
+                    { url: context.url, data },
+                    { trequest: t0, ttfb: t1, tload: performance.now(), loaded: 0, total: 0 },
+                    context
+                  );
+                })
+                .catch((err: Error) => {
+                  if (err?.name === "AbortError") return;
+                  callbacks.onError({ code: 0, text: String(err) }, context, null, null);
+                });
+              return;
+            }
+            // Non-blob URLs: fall back to default HLS.js XHR loader
+            super.load(context, config, callbacks);
+          }
+          abort() { this.ctrl?.abort(); super.abort?.(); }
+          destroy() { this.ctrl?.abort(); super.destroy?.(); }
+        }
+
+        // Build a single-segment virtual M3U8 whose segment is the blob URL.
+        // HLS.js fetches both the M3U8 and the segment via BlobFetchLoader.
+        const m3u8 = [
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:99999",
+          "#EXT-X-MEDIA-SEQUENCE:0",
+          "#EXTINF:99999.0,",
+          videoSrc, // the blob: URL of the raw .ts data
+          "#EXT-X-ENDLIST",
+        ].join("\n");
+        m3u8BlobUrl = URL.createObjectURL(
+          new Blob([m3u8], { type: "application/x-mpegURL" })
+        );
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        hls = new Hls({ loader: BlobFetchLoader as any });
+        hls.loadSource(m3u8BlobUrl);
+        hls.attachMedia(video);
+      } else {
+        // iOS Safari: native MPEG-TS support — direct blob src works here
+        video.src = videoSrc;
+        video.load();
+      }
+    } else {
+      // ── Live network HLS stream path ──────────────────────────────────
+      if (!videoSrc) return;
+      if (Hls.isSupported()) {
+        hls = new Hls({ enableWorker: true });
+        hls.loadSource(videoSrc);
+        hls.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        // iOS Safari native HLS
+        video.src = videoSrc;
+      }
     }
 
-    // ── Live network HLS stream path ────────────────────────────────────
-    if (!videoSrc) return;
-    let hls: Hls | null = null;
-    if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true });
-      hls.loadSource(videoSrc);
-      hls.attachMedia(video);
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // iOS Safari native HLS
-      video.src = videoSrc;
-    }
     return () => {
       hls?.destroy();
+      if (m3u8BlobUrl) URL.revokeObjectURL(m3u8BlobUrl);
     };
   }, [videoSrc, isOfflineBlob]);
 
