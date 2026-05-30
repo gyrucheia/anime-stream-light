@@ -45,7 +45,13 @@ function Home() {
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsOffline(!navigator.onLine);
-      const handleOnline = () => setIsOffline(false);
+      const handleOnline = () => {
+        setIsOffline(false);
+        // Force refetch to wake up Render API and instantly reload home sections when WiFi restores
+        spotlight.refetch();
+        trending.refetch();
+        popular.refetch();
+      };
       const handleOffline = () => {
         setIsOffline(true);
         setActiveTab("offline"); // Auto switch tab to Offline Library when offline
@@ -57,7 +63,7 @@ function Home() {
         window.removeEventListener("offline", handleOffline);
       };
     }
-  }, []);
+  }, [spotlight, trending, popular]);
 
   const trending = useQuery({
     queryKey: ["trending"],
@@ -318,14 +324,8 @@ function OfflinePlayerModal({
           video.src = offlineUrl;
         }
 
-        video.onloadedmetadata = () => {
-          if (active) setLoading(false);
-        };
-        
-        // Mobile browsers block autoplay without click, so trigger play once loaded
-        video.oncanplay = () => {
-          video.play().catch(() => {});
-        };
+        setLoading(false);
+        video.play().catch(() => {});
 
       } catch (err: any) {
         console.error(err);
