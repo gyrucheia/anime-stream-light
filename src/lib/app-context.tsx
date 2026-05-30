@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { api, AnimeItem, EpisodeMeta, Stream, proxiedM3U8, proxiedSegment } from "./api";
-import { saveSegmentBlob, saveEpisodeMeta, deleteEpisodeAll } from "./offline-db";
 
 // ==========================================
 // 1. THEME CONTEXT
@@ -548,9 +547,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         throw new Error("No segments found in playlist.");
       }
 
-      // ── Step 4: Fetch segments + save each individually to IndexedDB ──
-      // Storing N small blobs (~5 MB each) instead of one big blob means the
-      // offline player only loads the next few segments into RAM at a time.
+      // ── Step 4: Fetch segments + concatenate in-memory ──
       const buffers: ArrayBuffer[] = [];
       for (let i = 0; i < segments.length; i++) {
         const segRes = await fetch(segments[i].proxiedUrl);
@@ -558,31 +555,12 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         const buffer = await segRes.arrayBuffer();
         buffers.push(buffer);
 
-        // Persist segment to IndexedDB for offline playback
-        try {
-          await saveSegmentBlob(downloadId, i, new Blob([buffer], { type: "video/mp2t" }));
-        } catch (dbErr) {
-          console.error(`[DownloadProvider] Failed to save segment ${i}:`, dbErr);
-        }
-
         // Update progress in state
         const currentProgress = Math.round(((i + 1) / segments.length) * 100);
         setActiveDownloads((prev) => ({
           ...prev,
           [downloadId]: { ...prev[downloadId], progress: currentProgress },
         }));
-      }
-
-      // ── Step 5: Save episode metadata + trigger device file download ────
-      // Metadata stores segment count + per-segment durations needed to rebuild
-      // a proper HLS M3U8 for offline playback.
-      try {
-        await saveEpisodeMeta(downloadId, {
-          segmentCount: segments.length,
-          durations: segments.map((s) => s.duration),
-        });
-      } catch (dbErr) {
-        console.error("[DownloadProvider] Failed to save episode meta:", dbErr);
       }
 
       // Trigger .ts file download to device storage (full episode concatenated)
@@ -647,11 +625,6 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
 
   const removeDownloadedEpisode = async (animeId: number, episodeNumber: number) => {
     const downloadId = `${animeId}_ep_${episodeNumber}`;
-    try {
-      await deleteEpisodeAll(downloadId);
-    } catch (err) {
-      console.error("Failed to delete episode from IndexedDB:", err);
-    }
     setActiveDownloads((prev) => {
       const next = { ...prev };
       delete next[downloadId];

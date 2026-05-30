@@ -7,8 +7,6 @@ import { z } from "zod";
 import { Play, Compass, TrendingUp, HardDriveDownload, AlertTriangle, Trash2, X, Loader2 } from "lucide-react";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
 import { useState, useEffect, useRef } from "react";
-import { getSegmentBlob, getEpisodeMeta } from "@/lib/offline-db";
-import Hls from "hls.js";
 
 const searchSchema = z.object({
   q: z.string().optional(),
@@ -280,221 +278,115 @@ function Home() {
       </footer>
 
       {playingOfflineEpisode && (
-        <OfflinePlayerModal
+        <OfflineInstructionModal
           episode={playingOfflineEpisode}
           onClose={() => setPlayingOfflineEpisode(null)}
+          onRemove={() => removeDownloadedEpisode(playingOfflineEpisode.animeId, playingOfflineEpisode.episodeNumber)}
         />
       )}
     </div>
   );
 }
 
-function OfflinePlayerModal({
+function OfflineInstructionModal({
   episode,
   onClose,
+  onRemove,
 }: {
   episode: any;
   onClose: () => void;
+  onRemove: () => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-    let offlineUrl = "";
-    let hls: Hls | null = null;
-
-    async function startPlay() {
-      try {
-        const downloadId = episode.id;
-        const meta = await getEpisodeMeta(downloadId);
-        if (!meta || meta.segmentCount === 0) {
-          throw new Error("Video file not found in local browser storage.");
-        }
-
-        const video = videoRef.current;
-        if (!video) return;
-
-        if (Hls.isSupported()) {
-          // Play via custom virtual in-memory HLS stream for Android/Desktop browsers
-          const maxDur = Math.ceil(Math.max(...meta.durations, 0) + 1);
-          const lines = [
-            "#EXTM3U",
-            "#EXT-X-VERSION:3",
-            `#EXT-X-TARGETDURATION:${maxDur}`,
-            "#EXT-X-MEDIA-SEQUENCE:0",
-          ];
-          for (let i = 0; i < meta.segmentCount; i++) {
-            lines.push(`#EXTINF:${(meta.durations[i] || 0).toFixed(3)},`);
-            lines.push(`idb://${downloadId}/seg/${i}`);
-          }
-          lines.push("#EXT-X-ENDLIST");
-
-          const m3u8Blob = new Blob([lines.join("\n")], { type: "application/x-mpegURL" });
-          offlineUrl = URL.createObjectURL(m3u8Blob);
-
-          // Custom HLS loader for IndexedDB segments
-          const DefaultLoader = Hls.DefaultConfig.loader as any;
-
-          class OfflineIDBLoader extends DefaultLoader {
-            private ctrl: AbortController | null = null;
-            load(context: any, _config: any, callbacks: any) {
-              const url = context.url as string;
-
-              // idb:// segment URL
-              if (url.startsWith("idb://")) {
-                const withoutScheme = url.slice("idb://".length);
-                const slashSeg = withoutScheme.lastIndexOf("/seg/");
-                const dlId = withoutScheme.slice(0, slashSeg);
-                const segIndex = parseInt(withoutScheme.slice(slashSeg + "/seg/".length), 10);
-                const t0 = performance.now();
-
-                getSegmentBlob(dlId, segIndex)
-                  .then(async (blob) => {
-                    if (!blob) {
-                      callbacks.onError(
-                        { code: 0, text: `Offline segment ${segIndex} missing from IndexedDB` },
-                        context, null, null
-                      );
-                      return;
-                    }
-                    const data = await blob.arrayBuffer();
-                    callbacks.onSuccess(
-                      { url, data },
-                      {
-                        trequest: t0,
-                        ttfb: performance.now(),
-                        tload: performance.now(),
-                        loaded: data.byteLength,
-                        total: data.byteLength,
-                      },
-                      context
-                    );
-                  })
-                  .catch((err: Error) => {
-                    callbacks.onError({ code: 0, text: String(err) }, context, null, null);
-                  });
-                return;
-              }
-
-              // blob: URL (virtual M3U8)
-              if (url.startsWith("blob:")) {
-                this.ctrl = new AbortController();
-                const t0 = performance.now();
-                fetch(url, { signal: this.ctrl.signal })
-                  .then(async (res) => {
-                    const t1 = performance.now();
-                    const data =
-                      context.responseType === "arraybuffer"
-                        ? await res.arrayBuffer()
-                        : await res.text();
-                    callbacks.onSuccess(
-                      { url, data },
-                      { trequest: t0, ttfb: t1, tload: performance.now(), loaded: 0, total: 0 },
-                      context
-                    );
-                  })
-                  .catch((err: Error) => {
-                    if (err?.name === "AbortError") return;
-                    callbacks.onError({ code: 0, text: String(err) }, context, null, null);
-                  });
-                return;
-              }
-
-              super.load(context, _config, callbacks);
-            }
-            abort() { this.ctrl?.abort(); super.abort?.(); }
-            destroy() { this.ctrl?.abort(); super.destroy?.(); }
-          }
-
-          hls = new Hls({ loader: OfflineIDBLoader as any });
-          hls.loadSource(offlineUrl);
-          hls.attachMedia(video);
-        } else {
-          // iOS Safari: native video engine plays concatenated Blob URL
-          const segments: Blob[] = [];
-          for (let i = 0; i < meta.segmentCount; i++) {
-            const segBlob = await getSegmentBlob(downloadId, i);
-            if (segBlob) {
-              segments.push(segBlob);
-            }
-          }
-          if (segments.length === 0) {
-            throw new Error("No segments found for this downloaded episode.");
-          }
-          const fullBlob = new Blob(segments, { type: "video/mp2t" });
-          offlineUrl = URL.createObjectURL(fullBlob);
-          video.src = offlineUrl;
-        }
-
-        setLoading(false);
-        video.play().catch(() => {});
-
-      } catch (err: any) {
-        console.error(err);
-        if (active) {
-          setError(err.message || "Failed to load offline video.");
-          setLoading(false);
-        }
-      }
-    }
-
-    startPlay();
-
-    return () => {
-      active = false;
-      hls?.destroy();
-      if (offlineUrl) {
-        URL.revokeObjectURL(offlineUrl);
-      }
-    };
-  }, [episode.id]);
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-4 animate-in fade-in duration-300">
-      <div className="relative w-full max-w-4xl space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between text-white">
-          <div>
-            <h2 className="text-base font-semibold truncate max-w-sm sm:max-w-md">
-              {episode.animeTitle}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-border bg-card p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+        <button
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-full p-1.5 hover:bg-muted text-muted-foreground transition cursor-pointer"
+        >
+          <X size={18} />
+        </button>
+
+        <div className="flex flex-col items-center text-center space-y-4">
+          {/* Elegant Circular Success Icon */}
+          <div className="rounded-full bg-green-500/10 p-4 text-green-500 animate-bounce">
+            <HardDriveDownload size={36} />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-lg font-bold tracking-tight text-foreground">
+              Episode Saved to Device!
             </h2>
-            <p className="text-xs text-muted-foreground">
-              Episode {episode.episodeNumber} · Playing Offline
+            <p className="text-xs text-muted-foreground font-semibold px-2">
+              {episode.animeTitle} · Episode {episode.episodeNumber}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-full bg-white/10 p-2 hover:bg-white/20 transition text-white"
-          >
-            <X size={18} />
-          </button>
-        </div>
 
-        {/* Video Player Box */}
-        <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl">
-          {loading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/90 text-white">
-              <Loader2 className="animate-spin text-primary mr-2" size={20} />
-              <span className="text-sm">Loading offline video...</span>
+          <div className="w-full rounded-2xl bg-muted/40 border border-border/50 p-4 text-left text-xs space-y-3.5">
+            <p className="text-muted-foreground leading-relaxed">
+              This episode has been downloaded directly as a <span className="font-semibold text-foreground">.ts (MPEG-TS) video file</span> to your device's native storage.
+            </p>
+
+            <div className="space-y-2 border-t border-border/50 pt-3">
+              <span className="font-bold text-[10px] uppercase tracking-wider text-muted-foreground">
+                How to Play Offline:
+              </span>
+              
+              <div className="space-y-2.5">
+                <div className="flex gap-2.5">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                    1
+                  </span>
+                  <p className="text-[11px] text-foreground leading-relaxed">
+                    Open your device's <span className="font-semibold">File Manager</span> or <span className="font-semibold">Downloads</span> folder.
+                  </p>
+                </div>
+
+                <div className="flex gap-2.5">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                    2
+                  </span>
+                  <p className="text-[11px] text-foreground leading-relaxed">
+                    Locate the file starting with <code className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-primary truncate max-w-[200px] inline-block align-bottom">{episode.animeTitle.replace(/[^a-z0-9]+/gi, "_")}_Ep_...</code>
+                  </p>
+                </div>
+
+                <div className="flex gap-2.5">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                    3
+                  </span>
+                  <p className="text-[11px] text-foreground leading-relaxed">
+                    Tap/double-click it to watch in your preferred video player (we recommend <span className="font-semibold text-primary">VLC</span> or <span className="font-semibold text-primary">MX Player</span> for Android).
+                  </p>
+                </div>
+              </div>
             </div>
-          )}
+          </div>
 
-          {error && (
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/90 text-destructive p-4 text-center">
-              <AlertTriangle className="text-destructive mb-2" size={28} />
-              <p className="text-sm font-semibold">{error}</p>
-            </div>
-          )}
-
-          <video
-            ref={videoRef}
-            controls
-            autoPlay
-            playsInline
-            className="h-full w-full object-contain"
-          />
+          {/* Action buttons */}
+          <div className="grid w-full grid-cols-2 gap-3 pt-2">
+            <button
+              onClick={() => {
+                const confirmRemove = window.confirm(
+                  `Remove Episode ${episode.episodeNumber} of ${episode.animeTitle} from your Offline Library history?`
+                );
+                if (confirmRemove) {
+                  onRemove();
+                  onClose();
+                }
+              }}
+              className="flex items-center justify-center gap-1.5 rounded-full border border-destructive/20 bg-destructive/5 py-2.5 text-xs font-semibold text-destructive hover:bg-destructive/10 transition cursor-pointer"
+            >
+              <Trash2 size={13} />
+              Remove history
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-full bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 shadow transition cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
         </div>
       </div>
     </div>
