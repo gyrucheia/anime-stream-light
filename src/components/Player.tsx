@@ -3,7 +3,7 @@ import { Download, Loader2, Check } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Stream, EpisodeMeta, proxiedM3U8 } from "@/lib/api";
 import { useWatchHistory, useBackgroundDownloads } from "@/lib/app-context";
-import { getVideoBlob, createOfflineStreamUrl } from "@/lib/offline-db";
+import { getVideoBlob } from "@/lib/offline-db";
 
 export function Player({
   stream,
@@ -31,20 +31,27 @@ export function Player({
   const dlProgress = currentDl?.progress ?? 0;
 
   const src = stream ? proxiedM3U8(stream.url, stream.referer) : "";
-  const [videoSrc, setVideoSrc] = useState<string>("");
+  // null = not loaded yet, "" = no source, string = url/bloburl
+  const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [isOfflineBlob, setIsOfflineBlob] = useState(false);
 
-  // Auto-switch to offline IndexedDB source if download is completed
+  // Resolve the correct video source: offline blob (priority) or live HLS stream
   useEffect(() => {
     let active = true;
-    let offlineUrl = "";
+    let createdBlobUrl = "";
 
     async function loadVideoSource() {
       if (isCompleted) {
         try {
           const blob = await getVideoBlob(downloadId);
           if (blob && active) {
-            offlineUrl = createOfflineStreamUrl(blob);
-            setVideoSrc(offlineUrl);
+            // ✅ Direct blob URL — works on Android Chrome & iOS Safari alike.
+            // Skips HLS.js entirely since the file is already fully downloaded.
+            // The blob-in-M3U8 approach fails on Android because HLS.js's
+            // XHR loader cannot follow blob: URLs as segment sources.
+            createdBlobUrl = URL.createObjectURL(blob);
+            setVideoSrc(createdBlobUrl);
+            setIsOfflineBlob(true);
             return;
           }
         } catch (err) {
@@ -54,6 +61,7 @@ export function Player({
 
       if (active) {
         setVideoSrc(src);
+        setIsOfflineBlob(false);
       }
     }
 
@@ -61,28 +69,40 @@ export function Player({
 
     return () => {
       active = false;
-      if (offlineUrl) {
-        URL.revokeObjectURL(offlineUrl);
+      if (createdBlobUrl) {
+        URL.revokeObjectURL(createdBlobUrl);
       }
     };
   }, [src, isCompleted, downloadId]);
 
+  // Attach video source to the <video> element
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !videoSrc) return;
+    if (!video || videoSrc === null) return;
 
+    // ── Offline blob path: set src directly, no HLS.js needed ──────────
+    if (isOfflineBlob && videoSrc) {
+      // Destroy any existing HLS instance before setting src directly
+      video.src = videoSrc;
+      video.load();
+      return;
+    }
+
+    // ── Live network HLS stream path ────────────────────────────────────
+    if (!videoSrc) return;
     let hls: Hls | null = null;
     if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true });
       hls.loadSource(videoSrc);
       hls.attachMedia(video);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      // iOS Safari native HLS
       video.src = videoSrc;
     }
     return () => {
       hls?.destroy();
     };
-  }, [videoSrc]);
+  }, [videoSrc, isOfflineBlob]);
 
   // Handle Watch Progress (Save Timestamp)
   useEffect(() => {

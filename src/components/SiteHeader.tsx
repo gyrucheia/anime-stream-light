@@ -109,7 +109,13 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur transition-colors duration-300">
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:gap-4 sm:px-6">
-        <Link to="/" className="flex shrink-0 items-center gap-2">
+        {/* Logo — hide text on mobile when search is focused */}
+        <Link
+          to="/"
+          className={`flex shrink-0 items-center gap-2 transition-all duration-300 ${
+            isFocused ? "max-sm:hidden" : ""
+          }`}
+        >
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-foreground text-background transition">
             <span className="text-sm font-semibold">G</span>
           </span>
@@ -118,7 +124,13 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
           </span>
         </Link>
 
-        <form onSubmit={submit} className="flex flex-1 items-center" ref={searchRef}>
+        <form
+          onSubmit={submit}
+          className={`flex items-center transition-all duration-300 ${
+            isFocused ? "flex-1" : "flex-1"
+          }`}
+          ref={searchRef}
+        >
           <div className="relative w-full">
             <Search
               size={16}
@@ -130,12 +142,14 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
               onFocus={() => setIsFocused(true)}
               type="search"
               placeholder="Search anime…"
-              className="h-10 w-full rounded-full border border-border bg-muted/50 pl-9 pr-4 text-sm outline-none transition focus:border-primary focus:bg-background focus:ring-2 focus:ring-primary/15"
+              className="h-10 w-full rounded-full border border-border bg-muted/50 pl-9 pr-4 text-sm outline-none transition-all duration-300 focus:border-primary focus:bg-background focus:ring-2 focus:ring-primary/15"
             />
 
             {/* Floating Autocomplete suggestions card */}
             {isFocused && (
-              <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-2xl border border-border bg-card p-4 shadow-2xl animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-2xl border border-border bg-card p-4 shadow-2xl animate-in fade-in slide-in-from-top-2 duration-200"
+                style={{ minWidth: "min(92vw, 400px)", left: "50%", transform: "translateX(-50%)" }}
+              >
                 {q.trim() === "" ? (
                   // Recent search history (input focused & empty)
                   <div>
@@ -167,7 +181,7 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                         {searchHistory.map((query) => (
                           <div
                             key={query}
-                            className="flex items-center justify-between rounded-lg px-2 py-1.5 transition hover:bg-muted/60"
+                            className="flex items-center justify-between rounded-lg px-2 py-2 transition hover:bg-muted/60"
                           >
                             <span
                               onClick={() => {
@@ -175,7 +189,7 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                                 navigate({ to: "/", search: { q: query } });
                                 setIsFocused(false);
                               }}
-                              className="flex-1 cursor-pointer text-sm font-medium hover:text-primary text-foreground truncate"
+                              className="flex-1 cursor-pointer text-sm font-medium hover:text-primary text-foreground"
                             >
                               {query}
                             </span>
@@ -185,10 +199,10 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                                 e.stopPropagation();
                                 removeSearchQuery(query);
                               }}
-                              className="rounded-full p-1 hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition"
+                              className="ml-2 shrink-0 rounded-full p-1.5 hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition"
                               title="Delete recent query"
                             >
-                              <X size={12} />
+                              <X size={13} />
                             </button>
                           </div>
                         ))}
@@ -209,9 +223,9 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                       <div className="space-y-3 py-2">
                         {Array.from({ length: 4 }).map((_, i) => (
                           <div key={i} className="flex items-center gap-3">
-                            <div className="h-10 w-8 animate-pulse rounded bg-muted" />
+                            <div className="h-12 w-9 animate-pulse rounded bg-muted" />
                             <div className="flex-1 space-y-2">
-                              <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+                              <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
                               <div className="h-2 w-1/3 animate-pulse rounded bg-muted" />
                             </div>
                           </div>
@@ -234,10 +248,10 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                             <img
                               src={posterOf(s)}
                               alt={titleOf(s)}
-                              className="h-10 w-8 shrink-0 rounded object-cover bg-muted border border-border/20"
+                              className="h-12 w-9 shrink-0 rounded object-cover bg-muted border border-border/20"
                             />
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold hover:text-primary leading-tight text-foreground">
+                              <p className="text-sm font-semibold hover:text-primary leading-tight text-foreground">
                                 {titleOf(s)}
                               </p>
                               <p className="mt-0.5 text-xs text-muted-foreground">
@@ -255,7 +269,10 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
           </div>
         </form>
 
-        <div className="flex items-center gap-1 sm:gap-2">
+        {/* Action buttons — hide on mobile when search is focused */}
+        <div className={`flex items-center gap-1 sm:gap-2 transition-all duration-300 ${
+          isFocused ? "max-sm:hidden" : ""
+        }`}>
           {/* Active Downloads Status Icon */}
           {activeDownloadsList.length > 0 && (
             <button
