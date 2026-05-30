@@ -343,7 +343,13 @@ export function SiteHeader({ initialQuery = "" }: { initialQuery?: string }) {
                     notifications.map((n) => (
                       <div
                         key={n.id}
-                        onClick={() => markAsRead(n.id)}
+                        onClick={() => {
+                          markAsRead(n.id);
+                          if (n.animeId) {
+                            navigate({ to: "/anime/$id", params: { id: String(n.animeId) } });
+                            setShowNotifications(false);
+                          }
+                        }}
                         className={`flex gap-3 rounded-xl border border-transparent p-2.5 transition cursor-pointer hover:bg-muted/30 ${
                           !n.read ? "bg-muted/10 border-border/40 font-medium" : ""
                         }`}

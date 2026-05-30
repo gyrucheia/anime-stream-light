@@ -211,6 +211,7 @@ export interface AppNotification {
   timestamp: number;
   type: "update" | "favorite" | "download";
   read: boolean;
+  animeId?: number; // Optional reference to redirect to on click
 }
 
 export interface FavoriteItem {
@@ -222,7 +223,12 @@ export interface FavoriteItem {
 interface NotificationContextType {
   notifications: AppNotification[];
   favorites: FavoriteItem[];
-  addNotification: (title: string, message: string, type: AppNotification["type"]) => void;
+  addNotification: (
+    title: string,
+    message: string,
+    type: AppNotification["type"],
+    animeId?: number
+  ) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
   clearNotifications: () => void;
@@ -257,7 +263,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     localStorage.setItem("gyrucheia_favorites", JSON.stringify(favorites));
   }, [favorites]);
 
-  const addNotification = (title: string, message: string, type: AppNotification["type"]) => {
+  const addNotification = (
+    title: string,
+    message: string,
+    type: AppNotification["type"],
+    animeId?: number
+  ) => {
     setNotifications((prev) => [
       {
         id: Math.random().toString(36).substring(2, 9),
@@ -266,6 +277,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         timestamp: Date.now(),
         type,
         read: false,
+        animeId,
       },
       ...prev,
     ]);
@@ -318,7 +330,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
               `Episode ${currentEps} is now available for ${
                 fav.anime.title.english || fav.anime.title.romaji || "your favorite anime"
               }.`,
-              "favorite"
+              "favorite",
+              fav.anime.id
             );
           }
         } catch (err) {
@@ -581,7 +594,8 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       addNotification(
         "Download completed!",
         `Episode ${episodeMeta.number} of ${animeTitle} downloaded successfully to this device.`,
-        "download"
+        "download",
+        animeId
       );
     } catch (err: any) {
       console.error("[DownloadProvider] Background download failed:", err);
@@ -597,7 +611,8 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       addNotification(
         "Download failed",
         `Episode ${episodeMeta.number} of ${animeTitle} failed to download: ${err.message || err}`,
-        "download"
+        "download",
+        animeId
       );
     }
   };
