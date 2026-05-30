@@ -41,29 +41,6 @@ function Home() {
   const completedDownloads = Object.values(activeDownloads).filter((d) => d.status === "completed");
   const completedCount = completedDownloads.length;
 
-  // Watch for online/offline events to automatically switch interface mode
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setIsOffline(!navigator.onLine);
-      const handleOnline = () => {
-        setIsOffline(false);
-        // Force refetch to wake up Render API and instantly reload home sections when WiFi restores
-        spotlight.refetch();
-        trending.refetch();
-        popular.refetch();
-      };
-      const handleOffline = () => {
-        setIsOffline(true);
-        setActiveTab("offline"); // Auto switch tab to Offline Library when offline
-      };
-      window.addEventListener("online", handleOnline);
-      window.addEventListener("offline", handleOffline);
-      return () => {
-        window.removeEventListener("online", handleOnline);
-        window.removeEventListener("offline", handleOffline);
-      };
-    }
-  }, [spotlight, trending, popular]);
 
   const trending = useQuery({
     queryKey: ["trending"],
@@ -91,6 +68,30 @@ function Home() {
     queryFn: () => api.search(query, 1),
     enabled: !!query && !isOffline,
   });
+
+  // Watch for online/offline events to automatically switch interface mode
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsOffline(!navigator.onLine);
+      const handleOnline = () => {
+        setIsOffline(false);
+        // Force refetch to wake up Render API and instantly reload home sections when WiFi restores
+        spotlight.refetch();
+        trending.refetch();
+        popular.refetch();
+      };
+      const handleOffline = () => {
+        setIsOffline(true);
+        setActiveTab("offline"); // Auto switch tab to Offline Library when offline
+      };
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+      return () => {
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
+      };
+    }
+  }, [spotlight, trending, popular]);
 
   return (
     <div className="min-h-screen bg-background">
